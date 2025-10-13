@@ -38,6 +38,31 @@ class ChatCLI(cmd.Cmd):
         self.stream_mode = True
         self.model = "Qwen/Qwen3-8B"
 
+    def do_help(self, arg):
+        """显示命令帮助"""
+        if arg:
+            # 显示单个命令的帮助
+            cmd = getattr(self, f"help_{arg}", None)
+            if cmd:
+                cmd()
+            else:
+                func = getattr(self, f"do_{arg}", None)
+                if func and func.__doc__:
+                    print(func.__doc__)
+                else:
+                    print(f"未找到命令 '{arg}' 的帮助。")
+        else:
+            print("\n💬 ChatCLI 可用命令：\n")
+            print("  login       登录到 OpenAI 或兼容模型服务")
+            print("  chat        与模型进行对话")
+            print("  tools       查看或配置 MCP 工具连接")
+            print("  sessions    查看或切换聊天会话")
+            print("  health      测试后端健康状态")
+            print("  use         切换对话工作空间")
+            print("  quit        退出程序")
+            print("\n输入 `help <命令名>` 查看详细说明，例如：help chat\n")
+
+
     # ========== 登录 ==========
     def do_login(self, arg):
         """登录账户"""
@@ -225,6 +250,56 @@ class ChatCLI(cmd.Cmd):
         print("👋 Goodbye!")
         return True
 
+    # ========== MCP 工具管理 ==========
+    def do_tools(self, arg):
+        """
+        查看或配置 MCP 工具:
+          tools              - 查看当前工具列表
+          tools connect <url> - 连接到指定 MCP 服务
+        """
+        args = arg.strip().split()
+        if not args:
+            self._show_tools()
+            return
+
+        cmd = args[0]
+        if cmd == "connect":
+            if len(args) < 2:
+                print("❌ 用法: tools connect <url>")
+                return
+            url = args[1]
+            self._connect_mcp(url)
+        else:
+            print("❌ 未知命令，用法: tools 或 tools connect <url>")
+
+    def _show_tools(self):
+        try:
+            res = requests.get(f"{self.server_url}/mcp/tools")
+            if res.status_code == 200:
+                tools = res.json().get("tools", [])
+                if not tools:
+                    print("📭 暂无加载的工具。")
+                    return
+                print(f"\n🔧 已加载 {len(tools)} 个工具:")
+                for i, t in enumerate(tools):
+                    fn = t["function"]
+                    print(f"{i+1}. {fn['name']}: {fn.get('description', '')}")
+            else:
+                print("❌ 获取工具列表失败。")
+        except Exception as e:
+            print(f"⚠️ 请求失败：{e}")
+
+    def _connect_mcp(self, url: str):
+        try:
+            print(f"🔗 正在连接 MCP: {url}")
+            res = requests.post(f"{self.server_url}/mcp/connect", json={"url": url})
+            if res.status_code == 200:
+                tools = res.json().get("tools", [])
+                print(f"✅ 连接成功，加载 {len(tools)} 个工具。")
+            else:
+                print(f"❌ 连接失败: {res.text}")
+        except Exception as e:
+            print(f"⚠️ MCP 连接出错：{e}")
 
 if __name__ == "__main__":
     ChatCLI().cmdloop()

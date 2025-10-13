@@ -12,7 +12,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 app = FastAPI(title="MCP-OpenAI Gateway", version="2.0.0")
-
+mcp = None # mcp 管理实例
 
 # ===================== 用户登录模型 =====================
 
@@ -69,12 +69,12 @@ mcp = MCPClient()
 
 # ===================== 业务逻辑 =====================
 
-@app.on_event("startup")
-async def on_startup():
-    try:
-        await mcp.connect("http://localhost:9099/sse")
-    except Exception as e:
-        print(f"⚠️ MCP connection failed: {e}")
+# @app.on_event("startup")
+# async def on_startup():
+#     try:
+#         await mcp.connect("http://localhost:9099/sse")
+#     except Exception as e:
+#         print(f"⚠️ MCP connection failed: {e}")
 
 
 @app.on_event("shutdown")
@@ -92,6 +92,22 @@ async def login(req: LoginRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "mcp_connected": bool(mcp.session), "tools": len(mcp.tools)}
+
+# ===================== MCP Config =====================
+class MCPConnectReq(BaseModel):
+    url: str
+
+@app.post("/mcp/connect")
+async def connect_mcp(req: MCPConnectReq):
+    try:
+        await mcp.connect(req.url)
+        return {"status": "ok", "tools": mcp.tools}
+    except Exception as e:
+        raise HTTPException(500, f"MCP连接失败: {e}")
+
+@app.get("/mcp/tools")
+async def list_tools():
+    return {"tools": mcp.tools}
 
 
 # ===================== Chat Completions =====================
