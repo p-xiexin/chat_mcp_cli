@@ -58,7 +58,6 @@ class ChatCLI(cmd.Cmd):
             print("  tools       查看或配置 MCP 工具连接")
             print("  sessions    查看或切换聊天会话")
             print("  health      测试后端健康状态")
-            print("  use         切换对话工作空间")
             print("  quit        退出程序")
             print("\n输入 `help <命令名>` 查看详细说明，例如：help chat\n")
 
@@ -107,26 +106,23 @@ class ChatCLI(cmd.Cmd):
         for i, s in enumerate(sessions):
             title = s.get("title", f"会话{i+1}")
             print(f"{i+1}. {title} ({len(s.get('messages', []))} 条消息)")
-        print("\n💡 使用命令: use <编号> 继续该会话")
-
-    # ========== 选择历史会话 ==========
-    def do_use(self, arg):
-        """选择一个历史会话继续聊天: use <编号>"""
-        if not self.user_id:
-            print("⚠️ 请先登录。")
-            return
-        try:
-            idx = int(arg.strip()) - 1
-            sessions = self.user_data.get("sessions", [])
-            if idx < 0 or idx >= len(sessions):
-                print("❌ 无效的编号。")
+        while True:
+            choice = input("\n💡 输入编号选择会话，或输入q退出: ").strip()
+            if choice == "q":
+                print("📭 已取消选择。")
                 return
-            self.current_session = sessions[idx]
-            print(f"✅ 已切换到会话 {idx+1}: {self.current_session.get('title','无标题')}")
-            self.messages = self.current_session["messages"]
-            self.do_chat("")
-        except ValueError:
-            print("❌ 请输入正确的编号。")
+            try:
+                idx = int(choice) - 1
+                if idx < 0 or idx >= len(sessions):
+                    print("❌ 无效编号，请重新输入。")
+                    continue
+                self.current_session = sessions[idx]
+                self.messages = self.current_session["messages"]
+                print(f"✅ 已切换到会话 {idx+1}: {self.current_session.get('title','无标题')}")
+                self.do_chat("")  # 进入对话
+                break
+            except ValueError:
+                print("❌ 请输入有效的数字编号。")
 
     # ========== 新建或继续会话 ==========
     def do_chat(self, arg):
@@ -223,6 +219,10 @@ class ChatCLI(cmd.Cmd):
             assistant_msg = {"role": "assistant", "content": response_text}
             if reasoning_text:
                 assistant_msg["reasoning_content"] = reasoning_text
+
+            #TODO: 到底应不应该保留tools执行的结果
+            for tool_result in tool_results.values():
+                self.messages.append(tool_result)
             self.messages.append(assistant_msg)
         except Exception as e:
             print(f"\n❌ 错误：{e}")
@@ -254,40 +254,35 @@ class ChatCLI(cmd.Cmd):
     def do_tools(self, arg):
         """
         查看或配置 MCP 工具:
-          tools              - 查看当前工具列表
-          tools connect <url> - 连接到指定 MCP 服务
+        tools              - 查看当前工具列表或管理连接
         """
-        args = arg.strip().split()
-        if not args:
-            self._show_tools()
-            return
-
-        cmd = args[0]
-        if cmd == "connect":
-            if len(args) < 2:
-                print("❌ 用法: tools connect <url>")
-                return
-            url = args[1]
-            self._connect_mcp(url)
-        else:
-            print("❌ 未知命令，用法: tools 或 tools connect <url>")
-
-    def _show_tools(self):
         try:
             res = requests.get(f"{self.server_url}/mcp/tools")
             if res.status_code == 200:
                 tools = res.json().get("tools", [])
-                if not tools:
-                    print("📭 暂无加载的工具。")
-                    return
-                print(f"\n🔧 已加载 {len(tools)} 个工具:")
-                for i, t in enumerate(tools):
-                    fn = t["function"]
-                    print(f"{i+1}. {fn['name']}: {fn.get('description', '')}")
+                if tools:
+                    print(f"\n🔧 已加载 {len(tools)} 个工具:")
+                    for i, t in enumerate(tools):
+                        fn = t["function"]
+                        print(f"{i+1}. {fn['name']}: {fn.get('description', '')}")
+                else:
+                    print("📭 当前没有 MCP 工具加载。")
+                # 提示是否更换连接
+                choice = input("\n💡 是否要更换 MCP 连接？(y/N): ").strip().lower()
+                if choice == "y":
+                    url = input("🔗 输入 MCP URL 以连接: ").strip()
+                    if not url:
+                        print("❌ URL 为空，取消连接。")
+                        return
+                    self._connect_mcp(url)
             else:
                 print("❌ 获取工具列表失败。")
-        except Exception as e:
-            print(f"⚠️ 请求失败：{e}")
+        except Exception:
+            print("📭 尚未连接 MCP。")
+            url = input("🔗 输入 MCP URL 以连接: ").strip()
+            if url:
+                self._connect_mcp(url)
+
 
     def _connect_mcp(self, url: str):
         try:

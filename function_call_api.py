@@ -6,20 +6,10 @@ from typing import List, Dict, Any, AsyncIterator, Optional
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from openai import OpenAI
 from mcp import ClientSession
 from mcp.client.sse import sse_client
-
-app = FastAPI(title="MCP-OpenAI Gateway", version="2.0.0")
-mcp = None # mcp 管理实例
-
-# ===================== 用户登录模型 =====================
-
-class LoginRequest(BaseModel):
-    user_id: str
-    password: str
-
 
 # ===================== MCP 客户端封装 =====================
 
@@ -68,35 +58,34 @@ class MCPClient:
 mcp = MCPClient()
 
 # ===================== 业务逻辑 =====================
-
-# @app.on_event("startup")
-# async def on_startup():
-#     try:
-#         await mcp.connect("http://localhost:9099/sse")
-#     except Exception as e:
-#         print(f"⚠️ MCP connection failed: {e}")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 FastAPI 启动")
+    yield
+    print("🛑 FastAPI 关闭")
     await mcp.close()
 
-
-@app.post("/login")
-async def login(req: LoginRequest):
-    if req.user_id == "admin" and req.password == "admin":
-        return {"message": f"User {req.user_id} logged in successfully."}
-    raise HTTPException(401, "Invalid credentials")
-
+app = FastAPI(title="MCP-OpenAI Gateway", version="2.0.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "mcp_connected": bool(mcp.session), "tools": len(mcp.tools)}
 
+# ===================== Login =====================
+class LoginRequest(BaseModel):
+    user_id: str
+    password: str
+@app.post("/login")
+async def login(req: LoginRequest):
+    if req.user_id == "admin" and req.password == "admin":
+        return {"message": f"User {req.user_id} logged in successfully."}
+    elif req.user_id == "pxx" and req.password == "pxx":
+        return {"message": f"User {req.user_id} logged in successfully."}
+    raise HTTPException(401, "Invalid credentials")
+
 # ===================== MCP Config =====================
 class MCPConnectReq(BaseModel):
     url: str
-
 @app.post("/mcp/connect")
 async def connect_mcp(req: MCPConnectReq):
     try:
