@@ -1,0 +1,6 @@
+uvicorn
+requests
+fastapi
+httpx
+fastmcp
+openai
