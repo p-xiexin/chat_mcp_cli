@@ -14,7 +14,7 @@ from mcp.client.sse import sse_client
 app = FastAPI(title="MCP-OpenAI Gateway", version="2.0.0")
 
 
-# ===================== 基础模型 =====================
+# ===================== 用户登录模型 =====================
 
 class LoginRequest(BaseModel):
     user_id: str
@@ -65,17 +65,7 @@ class MCPClient:
     async def close(self):
         await self.exit_stack.aclose()
 
-
 mcp = MCPClient()
-
-
-# ===================== OpenAI Client =====================
-
-client = OpenAI(
-    base_url="https://api.siliconflow.cn/v1",
-    api_key="sk-fvysgovrkoqorpbqpubqfbvfkwfwqkpthtmvzsvdwfkmwpzz"
-)
-
 
 # ===================== 业务逻辑 =====================
 
@@ -130,6 +120,11 @@ async def complete_chat(req: Dict[str, Any]):
     trace = []
 
     for step in range(10):
+        #TODO: model是平台二次存储的模型名+地址
+        client = OpenAI(
+            base_url="https://api.siliconflow.cn/v1",
+            api_key="sk-fvysgovrkoqorpbqpubqfbvfkwfwqkpthtmvzsvdwfkmwpzz"
+        )
         response = client.chat.completions.create(
             model=model,
             messages=messages,
@@ -201,6 +196,10 @@ async def stream_chat(req: Dict[str, Any]) -> AsyncIterator[str]:
     created = int(time.time())
 
     for i in range(10):
+        client = OpenAI(
+            base_url="https://api.siliconflow.cn/v1",
+            api_key="sk-fvysgovrkoqorpbqpubqfbvfkwfwqkpthtmvzsvdwfkmwpzz"
+        )
         stream = client.chat.completions.create(
             model=model,
             messages=messages,
@@ -223,7 +222,6 @@ async def stream_chat(req: Dict[str, Any]) -> AsyncIterator[str]:
                     else:
                         if tc.function.arguments:
                             tool_calls[idx].function.arguments += tc.function.arguments
-        print(tool_calls)
         if not tool_calls:
             yield "data: [DONE]\n\n"
             return
@@ -241,7 +239,6 @@ async def stream_chat(req: Dict[str, Any]) -> AsyncIterator[str]:
                 print("⚠️ 工具调用参数不完整:", tc.function.arguments)
                 args = {}
             result = await mcp.call_tool(tc.function.name, args)
-            print(result)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

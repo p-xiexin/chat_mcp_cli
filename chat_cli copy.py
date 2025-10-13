@@ -8,19 +8,18 @@ from typing import Any, List, Dict
 
 
 # ========== 工具函数 ==========
-def load_user_data(user_id: str) -> Dict:
+def load_history(user_id: str) -> List[Dict]:
     path = f"./history/{user_id}.json"
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"sessions": []}
+    return []
 
-
-def save_user_data(user_id: str, data: Dict):
+def save_history(user_id: str, messages: List[Dict]):
     os.makedirs("history", exist_ok=True)
     path = f"./history/{user_id}.json"
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(messages, f, ensure_ascii=False, indent=2)
 
 
 # ========== CLI 主体 ==========
@@ -33,8 +32,7 @@ class ChatCLI(cmd.Cmd):
         self.server_url = "http://127.0.0.1:8000"
         self.client = openai.OpenAI(base_url=f"{self.server_url}/v1", api_key="dummy")
         self.user_id = None
-        self.user_data: Dict = {"sessions": []}
-        self.current_session: Dict = None
+        self.messages: List[Dict] = []
         self.stream_mode = True
         self.model = "Qwen/Qwen3-8B"
 
@@ -50,16 +48,15 @@ class ChatCLI(cmd.Cmd):
             )
             if res.status_code == 200:
                 self.user_id = username
-                self.user_data = load_user_data(username)
+                self.messages = load_history(username)
                 self.prompt = f"(chat-cli:{self.user_id}) "
-                print(f"✅ 登录成功，已加载 {len(self.user_data['sessions'])} 个会话。")
-                print("💡 输入 sessions 查看所有会话，输入 chat 开始新对话。")
+                print(f"✅ 登录成功，已加载 {len(self.messages)} 条历史消息。")
             else:
                 print("❌ 登录失败：用户名或密码错误。")
         except Exception as e:
             print(f"⚠️ 登录出错：{e}")
 
-    # ========== 查看服务器状态 ==========
+    # ========== 健康检查 ==========
     def do_health(self, arg):
         """检查服务器健康状态"""
         try:
@@ -68,63 +65,12 @@ class ChatCLI(cmd.Cmd):
         except Exception as e:
             print(f"⚠️ 服务器健康检查失败：{e}")
 
-    # ========== 列出所有会话 ==========
-    def do_sessions(self, arg):
-        """列出所有会话"""
-        if not self.user_id:
-            print("⚠️ 请先登录。")
-            return
-        sessions = self.user_data.get("sessions", [])
-        if not sessions:
-            print("📭 暂无会话记录。")
-            return
-        print("\n🗂 历史会话列表：")
-        for i, s in enumerate(sessions):
-            title = s.get("title", f"会话{i+1}")
-            print(f"{i+1}. {title} ({len(s.get('messages', []))} 条消息)")
-        print("\n💡 使用命令: use <编号> 继续该会话")
-
-    # ========== 选择历史会话 ==========
-    def do_use(self, arg):
-        """选择一个历史会话继续聊天: use <编号>"""
-        if not self.user_id:
-            print("⚠️ 请先登录。")
-            return
-        try:
-            idx = int(arg.strip()) - 1
-            sessions = self.user_data.get("sessions", [])
-            if idx < 0 or idx >= len(sessions):
-                print("❌ 无效的编号。")
-                return
-            self.current_session = sessions[idx]
-            print(f"✅ 已切换到会话 {idx+1}: {self.current_session.get('title','无标题')}")
-            self.messages = self.current_session["messages"]
-            self.do_chat("")
-        except ValueError:
-            print("❌ 请输入正确的编号。")
-
-    # ========== 新建或继续会话 ==========
+    # ========== 聊天主流程 ==========
     def do_chat(self, arg):
-        """开始一个新对话（或继续当前会话）"""
-        if not self.user_id:
-            print("⚠️ 请先登录。")
-            return
-
-        # 如果当前没有选定会话，就创建新会话
-        if self.current_session is None:
-            session_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.current_session = {
-                "id": session_id,
-                "title": f"新对话_{session_id}",
-                "messages": []
-            }
-            self.user_data["sessions"].append(self.current_session)
-            print(f"\n🆕 新建会话: {self.current_session['title']}")
-        else:
-            print(f"\n💬 继续会话: {self.current_session.get('title', self.current_session['id'])}")
-
-        # 将当前会话的消息绑定到 self.messages
-        self.messages = self.current_session["messages"]
+        """开始对话，会话将自动保存"""
+        # if not self.user_id:
+        #     print("⚠️ 请先登录。")
+        #     return
 
         print("\n=== 进入对话模式 ===")
         print("💡 输入 '/exit' 退出，'/stream' 切换流式，'/normal' 切换普通。")
@@ -135,9 +81,9 @@ class ChatCLI(cmd.Cmd):
                 continue
 
             if user_input.lower() in ["/exit", "/quit"]:
-                save_user_data(self.user_id, self.user_data)
+                save_history(self.user_id, self.messages)
                 print(f"💾 已保存到 history/{self.user_id}.json")
-                print("👋 退出对话模式。")
+                print("👋 再见！")
                 break
 
             if user_input == "/stream":
@@ -151,6 +97,7 @@ class ChatCLI(cmd.Cmd):
                 continue
 
             self.messages.append({"role": "user", "content": user_input})
+
             if self.stream_mode:
                 self._stream_chat()
             else:
@@ -177,14 +124,17 @@ class ChatCLI(cmd.Cmd):
                 if getattr(delta, "tool_calls", None):
                     for tc in delta.tool_calls:
                         if tc.function and tc.function.name:
-                            print(f"\n🛠 调用函数: {tc.function.name}")
+                            print(f"🛠 调用函数: {tc.function.name}")
                         if tc.function and tc.function.arguments:
                             print(tc.function.arguments, end="", flush=True)
+
+                # --- 服务端返回工具调用结果 ---
                 if getattr(delta, "role", None) == "tool":
                     tool_call_id = getattr(delta, "tool_call_id", None)
                     tool_name = getattr(delta, "name", None)
                     tool_content = getattr(delta, "content", None)
-                    print(f"\n📦 工具返回结果({tool_name}, id={tool_call_id}): {tool_content}")
+
+                    print(f"\n\n📦 工具返回结果({tool_name}, id={tool_call_id}): {tool_content}")
                     tool_results[tool_call_id] = {
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -195,9 +145,17 @@ class ChatCLI(cmd.Cmd):
                     print(delta.content, end="", flush=True)
                     response_text += delta.content
 
+
+
+            # --- 整理最终 assistant 消息 ---
             assistant_msg = {"role": "assistant", "content": response_text}
             if reasoning_text:
                 assistant_msg["reasoning_content"] = reasoning_text
+            if tool_calls:
+                assistant_msg["tool_calls"] = list(tool_calls.values())
+
+            for tool_result in tool_results.values():
+                self.messages.append(tool_result)
             self.messages.append(assistant_msg)
         except Exception as e:
             print(f"\n❌ 错误：{e}")
@@ -216,11 +174,25 @@ class ChatCLI(cmd.Cmd):
         except Exception as e:
             print(f"❌ 错误：{e}")
 
+    # ========== 查看历史 ==========
+    def do_history(self, arg):
+        """查看历史记录"""
+        if not self.user_id:
+            print("⚠️ 请先登录。")
+            return
+        messages = load_history(self.user_id)
+        if not messages:
+            print("📭 暂无历史记录。")
+            return
+        for m in messages:
+            role = "🧑" if m["role"] == "user" else "🤖"
+            print(f"{role}: {m['content']}")
+
     # ========== 退出 ==========
     def do_quit(self, arg):
         """退出程序"""
         if self.user_id:
-            save_user_data(self.user_id, self.user_data)
+            save_history(self.user_id, self.messages)
             print(f"💾 已保存会话到 history/{self.user_id}.json")
         print("👋 Goodbye!")
         return True
