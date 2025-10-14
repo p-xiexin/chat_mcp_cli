@@ -3,7 +3,8 @@ import json
 import time
 import uuid
 from typing import List, Dict, Any, AsyncIterator, Optional
-from fastapi import FastAPI, HTTPException, status
+import aiohttp
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -101,21 +102,61 @@ async def list_tools():
 
 # ===================== Chat Completions =====================
 # https://platform.openai.com/docs/guides/streaming-responses?api-mode=responses
-# https://platform.openai.com/docs/api-reference/responses-streaming/response/created
+# https://platform.openai.com/docs/api-reference/responses-streaming/response/created  
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Dict[str, Any]):
-    """仿 OpenAI Responses API 的统一入口"""
-    if request.get("stream"):
-        return StreamingResponse(
-            stream_chat(request),
-            media_type="text/event-stream"
-        )
-    else:
-        return await complete_chat(request)
+async def chat_completions(req: Request):
+    body = await req.json()
+    if body.get("stream"):
+        async def safe_stream():
+            try:
+                async for chunk in stream_chat(body):
+                    if await req.is_disconnected():
+                        print("⚠️ 客户端断开连接，停止推送。")
+                        break
+                    yield chunk
+            except Exception as e:
+                print(f"❌ 流式异常: {e}")
+
+        return StreamingResponse(safe_stream(), media_type="text/event-stream")
+
+    return await complete_chat(body)
 
 
 import json
 from fastapi import HTTPException
+
+# ============ 🧩 RAG 查询函数 ============ #
+async def rag_retrieve(req: Dict[str, Any]) -> str:
+    """最简版 RAG 检索函数"""
+    extra = req.get("extra", {}) or {}
+    file_search = extra.get("file_search")
+    if not file_search:
+        return ""
+
+    base_url = "http://localhost:8900"   # TODO: 改为你的检索服务地址
+    vector_store_ids = file_search.get("vector_store_ids", [])
+    project_id = vector_store_ids[0] if vector_store_ids else "default"
+    query = req["messages"][-1]["content"]
+    payload = {
+        "query": query,
+        "retrieval_mode": "hybrid",
+        "top_k": file_search.get("max_num_results", 5),
+        "retrieval_weight": 0.5,
+    }
+
+    url = f"{base_url}/querySimple/{project_id}"
+    headers = {"Content-Type": "application/json"}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            data = await resp.json()
+            if isinstance(data, list):
+                # 返回列表时包装成字典
+                results = [{"id": str(i), "filename": "", "content": str(item)} for i, item in enumerate(data)]
+            else:
+                results = data.get("results", [])
+            return {"results": results}
+        
 
 async def complete_chat(req: Dict[str, Any]):
     """非流式推理：保持兼容 OpenAI SDK 返回结构，并在返回体上附加 `trace` 字段。"""
@@ -199,6 +240,52 @@ async def stream_chat(req: Dict[str, Any]) -> AsyncIterator[str]:
     model = req["model"]
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
+
+    # ============ 🔍 RAG 检索阶段 ============ #
+    try:
+        # 获取 RAG 查询结果字典
+        rag_context = await rag_retrieve(req)  # 返回 {"results": [...]}
+        results = rag_context.get("results", [])
+
+        if results:
+            # 1️⃣ 拼接所有文档内容，加入 messages，作为系统消息
+            concatenated = "\n\n".join([doc.get("content", "") for doc in results])
+            req["messages"].append({
+                "role": "system",
+                "content": f"以下是与用户问题相关的参考资料：\n{concatenated}"
+            })
+            print("✅ 已添加RAG上下文。")
+            print(results)
+
+            # 2️⃣ 流式返回每条 RAG 文档
+            for i, doc in enumerate(results):
+                chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "file_search",
+                                "annotations": [
+                                    {
+                                        "id": doc.get("id"),
+                                        "filename": doc.get("filename"),
+                                        "content": doc.get("content")
+                                    }
+                                ]
+                            },
+                            "finish_reason": None
+                        }
+                    ]
+                }
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+    except Exception as e:
+        print(f"⚠️ RAG 检索失败: {e}")
+
 
     for i in range(10):
         client = OpenAI(

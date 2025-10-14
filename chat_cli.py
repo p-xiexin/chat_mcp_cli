@@ -150,45 +150,67 @@ class ChatCLI(cmd.Cmd):
         print("\n=== 进入对话模式 ===")
         print("💡 输入 '/exit' 退出，'/stream' 切换流式，'/normal' 切换普通。")
 
+        streaming = False
         while True:
-            user_input = input("\n🧑 你: ").strip()
-            if not user_input:
-                continue
+            try:
+                user_input = input("\n🧑 你: ").strip()
+                if not user_input:
+                    continue
+                streaming = True
+                if user_input.lower() in ["/exit", "/quit"]:
+                    save_user_data(self.user_id, self.user_data)
+                    print(f"💾 已保存到 history/{self.user_id}.json")
+                    print("👋 退出对话模式。")
+                    break
 
-            if user_input.lower() in ["/exit", "/quit"]:
-                save_user_data(self.user_id, self.user_data)
-                print(f"💾 已保存到 history/{self.user_id}.json")
-                print("👋 退出对话模式。")
-                break
+                if user_input == "/stream":
+                    self.stream_mode = True
+                    print("✅ 已切换到流式模式。")
+                    continue
 
-            if user_input == "/stream":
-                self.stream_mode = True
-                print("✅ 已切换到流式模式。")
-                continue
+                if user_input == "/normal":
+                    self.stream_mode = False
+                    print("✅ 已切换到非流式模式。")
+                    continue
+                # ========= 判断是否启用 RAG 模式 =========
+                use_rag = False
+                # 定义一个包含文件搜索配置的 extra 参数
+                extra = {
+                    "file_search": {
+                        "vector_store_ids": ["qBCrXWawc4fe"],
+                        "max_num_results": 10
+                    }
+                }
+                if user_input.startswith("/rag "):
+                    use_rag = True
+                    user_input = user_input[len("/rag "):]
 
-            if user_input == "/normal":
-                self.stream_mode = False
-                print("✅ 已切换到非流式模式。")
-                continue
-
-            self.messages.append({"role": "user", "content": user_input})
-            if self.stream_mode:
-                self._stream_chat()
-            else:
-                self._complete_chat()
+                self.messages.append({"role": "user", "content": user_input})
+                if self.stream_mode:
+                    self._stream_chat(extra=extra if use_rag else None)
+                    streaming = False
+                else:
+                    self._complete_chat()
+            except KeyboardInterrupt:
+                if streaming:
+                    streaming = False
+                    print("\n🛑 中断当前请求。")
+                    continue  # 返回输入循环，不退出程序
+                else:
+                    break
 
     # ========== 流式对话 ==========
-    def _stream_chat(self):
+    def _stream_chat(self, extra=None):
         print("\n🤖 AI (流式): ", end="", flush=True)
         try:
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
-                stream=True
+                stream=True,
+                extra_body={"extra": extra}
             )
             response_text = ""
             reasoning_text = ""
-            tool_calls = {}
             tool_results = {}
             for chunk in stream:
                 delta = chunk.choices[0].delta
@@ -201,7 +223,22 @@ class ChatCLI(cmd.Cmd):
                             print(f"\n🛠 调用函数: {tc.function.name}")
                         if tc.function and tc.function.arguments:
                             print(tc.function.arguments, end="", flush=True)
-                if getattr(delta, "role", None) == "tool":
+                if getattr(delta, "role", None) == "file_search":
+                    annotations = getattr(delta, "annotations", [])
+                    if annotations:
+                        print("\n📄 RAG 查询结果：", flush=True)
+                        for i, ann in enumerate(annotations, start=1):
+                            doc_id = ann.get("id", "")
+                            filename = ann.get("filename", "")
+                            print(f"  {i}. 文档ID: {doc_id}", flush=True)
+                            print(f"     文件名: {filename}", flush=True)
+                            # 仅显示内容前 100 个字符作为预览
+                            preview = ann.get("content", "")
+                            preview = preview.replace("\n", " ")[:100]
+                            print(f"     内容预览: {preview}...", flush=True)
+                            print("  ──────────────────────────────", flush=True)
+                            # TODO:保存到 tool_results 或单独的 rag_results
+                elif getattr(delta, "role", None) == "tool":
                     tool_call_id = getattr(delta, "tool_call_id", None)
                     tool_name = getattr(delta, "name", None)
                     tool_content = getattr(delta, "content", None)
