@@ -125,18 +125,24 @@ async def chat_completions(req: Request):
 import json
 from fastapi import HTTPException
 
+def make_chunk(id, model, created, role, index=0, content=None, annotations=None, tool_call_id=None):
+    delta = {"role": role}
+    if content is not None: delta["content"] = content
+    if annotations is not None: delta["annotations"] = annotations
+    if tool_call_id: delta["tool_call_id"] = tool_call_id
+    return f"data: {json.dumps({'id': id,'object':'chat.completion.chunk','created':created,'model':model,'choices':[{'index':index,'delta':delta,'finish_reason':None}]}, ensure_ascii=False)}\n\n"
+
+
 # ============ 🧩 RAG 查询函数 ============ #
-async def rag_retrieve(req: Dict[str, Any]) -> str:
-    """最简版 RAG 检索函数"""
-    extra = req.get("extra", {}) or {}
+async def rag_retrieve(query: str, extra: Dict[str, Any]) -> Dict[str, Any]:
+    """最简版 RAG 检索函数，直接传入 query 和 extra"""
     file_search = extra.get("file_search")
     if not file_search:
-        return ""
+        return {"results": []}
 
-    base_url = "http://localhost:8900"   # TODO: 改为你的检索服务地址
+    base_url = "http://localhost:8900"   # TODO: 改为实际检索服务地址
     vector_store_ids = file_search.get("vector_store_ids", [])
     project_id = vector_store_ids[0] if vector_store_ids else "default"
-    query = req["messages"][-1]["content"]
     payload = {
         "query": query,
         "retrieval_mode": "hybrid",
@@ -242,49 +248,38 @@ async def stream_chat(req: Dict[str, Any]) -> AsyncIterator[str]:
     created = int(time.time())
 
     # ============ 🔍 RAG 检索阶段 ============ #
-    try:
-        # 获取 RAG 查询结果字典
-        rag_context = await rag_retrieve(req)  # 返回 {"results": [...]}
-        results = rag_context.get("results", [])
+    extra = req.get("extra", {}) or {}
+    file_search = extra.get("file_search")
+    query = req["messages"][-1]["content"]
 
-        if results:
-            # 1️⃣ 拼接所有文档内容，加入 messages，作为系统消息
-            concatenated = "\n\n".join([doc.get("content", "") for doc in results])
-            req["messages"].append({
-                "role": "system",
-                "content": f"以下是与用户问题相关的参考资料：\n{concatenated}"
-            })
-            print("✅ 已添加RAG上下文。")
-            print(results)
+    if file_search:  # 只有有 file_search 才执行 RAG 查询
+        try:
+            rag_context = await rag_retrieve(query, extra)
+            results = rag_context.get("results", [])
 
-            # 2️⃣ 流式返回每条 RAG 文档
-            for i, doc in enumerate(results):
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "file_search",
-                                "annotations": [
-                                    {
-                                        "id": doc.get("id"),
-                                        "filename": doc.get("filename"),
-                                        "content": doc.get("content")
-                                    }
-                                ]
-                            },
-                            "finish_reason": None
-                        }
-                    ]
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            if results:
+                # 拼接文档内容加入系统消息
+                concatenated = "\n\n".join([doc.get("content", "") for doc in results])
+                req["messages"].append({
+                    "role": "system",
+                    "content": f"以下是与用户问题相关的参考资料：\n{concatenated}"
+                })
+                print("✅ 已添加RAG上下文。")
 
-    except Exception as e:
-        print(f"⚠️ RAG 检索失败: {e}")
+                # 流式返回每条 RAG 文档
+                for i, doc in enumerate(results):
+                    yield make_chunk(
+                        completion_id, model, created,
+                        role="file_search",
+                        index=i,
+                        annotations=[{
+                            "id": doc.get("id"),
+                            "filename": doc.get("filename"),
+                            "content": doc.get("content")
+                        }]
+                    )
+        except Exception as e:
+            print(f"⚠️ RAG 检索失败: {e}")
 
 
     for i in range(10):
@@ -340,25 +335,13 @@ async def stream_chat(req: Dict[str, Any]) -> AsyncIterator[str]:
 
             # === 以 OpenAI 流格式发送工具结果 ===
             # https://platform.openai.com/docs/guides/function-calling#streaming
-            tool_event = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [
-                    {
-                        "index": i,
-                        "delta": {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "name": tc.function.name,
-                            "content": result,
-                        },
-                        "finish_reason": None
-                    }
-                ]
-            }
-            yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n"
+            yield make_chunk(
+                completion_id, model, created,
+                role="tool",
+                index=i,
+                content=result,
+                tool_call_id=tc.id
+            )
 
 if __name__ == "__main__":
     import uvicorn
