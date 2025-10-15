@@ -178,7 +178,7 @@ class ChatCLI(cmd.Cmd):
                 extra = {
                     "file_search": {
                         "vector_store_ids": ["qBCrXWawc4fe"],
-                        "max_num_results": 10
+                        "max_num_results": 5
                     }
                 }
                 if user_input.startswith("/rag "):
